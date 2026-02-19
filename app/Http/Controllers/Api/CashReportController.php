@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Carbon\Carbon;
 
 class CashReportController extends Controller
@@ -36,14 +37,37 @@ class CashReportController extends Controller
         }
 
         // Dealer (bayi) ve Kurye filtreleri
-        $dealerId  = $request->query('dealer_id');   // orders.dealer_id
+        $dealerId  = $request->query('dealer_id');   // temel filtre
         $courierId = $request->query('courier_id');  // vw_kurye_odeme_detay.kurye_id
 
+        $dealerScopeIds = collect();
         $deliverymanIds = collect();
         if (!empty($dealerId)) {
-            $deliverymanIds = DB::table('users')
-                ->where('dealer_id', $dealerId)
-                ->where('user_type', 'deliveryman')
+            $dealerRootId = (int) $dealerId;
+            $hasUserDealerColumn = Schema::hasColumn('users', 'dealer_id');
+            $dealerScopeIds = collect([$dealerRootId]);
+
+            if ($hasUserDealerColumn) {
+                $dealerScopeIds = $dealerScopeIds
+                    ->merge(
+                        DB::table('users')
+                            ->where('dealer_id', $dealerRootId)
+                            ->pluck('id')
+                    )
+                    ->unique()
+                    ->values();
+            }
+
+            // courier_id request'ten gelmese bile, dealer'a bagli kuryeler otomatik kapsanir
+            $deliverymanIdsQ = DB::table('users');
+            if ($hasUserDealerColumn && $dealerScopeIds->isNotEmpty()) {
+                $deliverymanIdsQ->whereIn('dealer_id', $dealerScopeIds->all());
+            } else {
+                $deliverymanIdsQ->whereRaw('1=0');
+            }
+
+            $deliverymanIds = $deliverymanIdsQ
+                ->whereIn('user_type', ['deliveryman', 'courier', 'delivery_man', 'kurye'])
                 ->pluck('id');
         }
 
@@ -59,7 +83,11 @@ class CashReportController extends Controller
         // -------------------------------------------------------------
         $daily = DB::table('vw_gunluk_kasa_ozet')
             ->whereBetween('tarih', [$fromDate, $toDate])
-            ->when($dealerId, function ($q) use ($dealerId) {
+            ->when($dealerId, function ($q) use ($dealerId, $dealerScopeIds) {
+                if ($dealerScopeIds->isNotEmpty()) {
+                    $q->whereIn('dealer_id', $dealerScopeIds->all());
+                    return;
+                }
                 $q->where('dealer_id', $dealerId);
             })
             ->orderBy('tarih')
@@ -85,7 +113,11 @@ class CashReportController extends Controller
         // -------------------------------------------------------------
         $customers = DB::table('vw_musteri_tahsilat_detay')
             ->whereBetween('islem_tarihi', [$fromDate, $toDate])
-            ->when($dealerId, function ($q) use ($dealerId) {
+            ->when($dealerId, function ($q) use ($dealerId, $dealerScopeIds) {
+                if ($dealerScopeIds->isNotEmpty()) {
+                    $q->whereIn('dealer_id', $dealerScopeIds->all());
+                    return;
+                }
                 $q->where('dealer_id', $dealerId);
             })
             ->orderBy('islem_tarihi')
@@ -113,7 +145,11 @@ class CashReportController extends Controller
         // -------------------------------------------------------------
         $suppliers = DB::table('vw_tedarikci_odeme_detay')
             ->whereBetween('islem_tarihi', [$fromDate, $toDate])
-            ->when($dealerId, function ($q) use ($dealerId) {
+            ->when($dealerId, function ($q) use ($dealerId, $dealerScopeIds) {
+                if ($dealerScopeIds->isNotEmpty()) {
+                    $q->whereIn('dealer_id', $dealerScopeIds->all());
+                    return;
+                }
                 $q->where('dealer_id', $dealerId);
             })
             ->orderBy('islem_tarihi')
@@ -141,9 +177,13 @@ class CashReportController extends Controller
         // -------------------------------------------------------------
         $couriers = DB::table('vw_kurye_odeme_detay')
             ->whereBetween('islem_tarihi', [$fromDate, $toDate])
-            ->when($dealerId, function ($q) use ($dealerId, $deliverymanIds) {
-                $q->where(function ($w) use ($dealerId, $deliverymanIds) {
-                    $w->where('dealer_id', $dealerId);
+            ->when($dealerId, function ($q) use ($dealerId, $dealerScopeIds, $deliverymanIds) {
+                $q->where(function ($w) use ($dealerId, $dealerScopeIds, $deliverymanIds) {
+                    if ($dealerScopeIds->isNotEmpty()) {
+                        $w->whereIn('dealer_id', $dealerScopeIds->all());
+                    } else {
+                        $w->where('dealer_id', $dealerId);
+                    }
                     if ($deliverymanIds->isNotEmpty()) {
                         $w->orWhereIn('kurye_id', $deliverymanIds->all());
                     }
@@ -177,7 +217,11 @@ class CashReportController extends Controller
         // -------------------------------------------------------------
         $vendors = DB::table('vw_bayi_komisyon_detay')
             ->whereBetween('islem_tarihi', [$fromDate, $toDate])
-            ->when($dealerId, function ($q) use ($dealerId) {
+            ->when($dealerId, function ($q) use ($dealerId, $dealerScopeIds) {
+                if ($dealerScopeIds->isNotEmpty()) {
+                    $q->whereIn('dealer_id', $dealerScopeIds->all());
+                    return;
+                }
                 $q->where('dealer_id', $dealerId);
             })
             ->orderBy('islem_tarihi')
@@ -208,6 +252,7 @@ class CashReportController extends Controller
             'date_to'   => $toDate,
             'dealer_id' => $dealerId,
             'courier_id'=> $courierId,
+            'resolved_dealer_scope_ids' => $dealerScopeIds,
             'resolved_deliveryman_ids' => $deliverymanIds,
             'summary'   => $summary,
             'daily'     => $daily,
