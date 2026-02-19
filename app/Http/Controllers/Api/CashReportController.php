@@ -20,12 +20,19 @@ class CashReportController extends Controller
         $fromParam = $request->query('from'); // '2025-11-16'
         $toParam   = $request->query('to');   // '2025-11-16'
 
-        if ($fromParam) {
-            $from = Carbon::parse($fromParam)->startOfDay();
-            $to   = Carbon::parse($toParam ?? $fromParam)->endOfDay();
-        } else {
-            $from = now()->startOfDay();
-            $to   = now()->endOfDay();
+        try {
+            if ($fromParam) {
+                $from = Carbon::parse($fromParam)->startOfDay();
+                $to   = Carbon::parse($toParam ?? $fromParam)->endOfDay();
+            } else {
+                $from = now()->startOfDay();
+                $to   = now()->endOfDay();
+            }
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Geçersiz tarih formatı. Örnek: from=2026-02-19&to=2026-02-19',
+            ], 422);
         }
 
         // Dealer (bayi) ve Kurye filtreleri
@@ -174,19 +181,32 @@ class CashReportController extends Controller
                 'odeme_durumu',
             ]);
 
-        // -------------------------------------------------------------
-        // 7) RESPONSE
-        // -------------------------------------------------------------
+        $summary = [
+            'customer_collections_total' => (float) $customers->sum('tahsil_edilen_tutar'),
+            'supplier_payments_total'    => (float) $suppliers->sum('tedarikci_odeme_tutari'),
+            'courier_payments_total'     => (float) $couriers->sum('kurye_odeme_tutari'),
+            'vendor_commissions_total'   => (float) $vendors->sum('bayi_komisyon_tutari'),
+            'net_cash_total'             => (float) $daily->sum('gunluk_net_kasa'),
+        ];
+
         return response()->json([
+            'success'   => true,
             'date_from' => $fromDate,
             'date_to'   => $toDate,
             'dealer_id' => $dealerId,
             'courier_id'=> $courierId,
+            'summary'   => $summary,
             'daily'     => $daily,
             'customers' => $customers,
             'suppliers' => $suppliers,
             'couriers'  => $couriers,
             'vendors'   => $vendors,
+            // Backward-compatible aliaslar
+            'daily_cash'           => $daily,
+            'customer_collections' => $customers,
+            'supplier_payments'    => $suppliers,
+            'courier_payments'     => $couriers,
+            'vendor_commissions'   => $vendors,
         ]);
     }
 }

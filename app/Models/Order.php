@@ -11,6 +11,10 @@ class Order extends Model
 {
     use HasFactory;
 
+    protected $appends = [
+        'created_by_name',
+    ];
+
     protected $fillable = [
         'user_id',        // buyer
         'dealer_id',      // <-- EKLE
@@ -33,6 +37,8 @@ class Order extends Model
 
     protected $casts = [
         'total_amount' => 'decimal:2',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
     ];
 
     protected static function boot()
@@ -95,8 +101,25 @@ class Order extends Model
     {
         return $this->hasMany(OrderItem::class);
     }
-        public function partnerClient(): BelongsTo
+    public function partnerClient(): BelongsTo
     {
         return $this->belongsTo(PartnerClient::class, 'partner_client_id');
+    }
+
+    public function getCreatedByNameAttribute(): ?string
+    {
+        $name = $this->attributes['buyer_name']
+            ?? $this->attributes['ad_soyad']
+            ?? null;
+
+        if (!empty($name)) {
+            return (string) $name;
+        }
+
+        if ($this->relationLoaded('user') && $this->user) {
+            return $this->user->name;
+        }
+
+        return null;
     }
 }

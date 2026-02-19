@@ -19,7 +19,7 @@ class OrderItem extends Model
         'total_price',
         'status',
          'dealer_status',
-           'supplier_status ',
+           'supplier_status',
     ];
 
     protected $casts = [

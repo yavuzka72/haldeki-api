@@ -1102,60 +1102,63 @@ public function supplierOrders(Request $request)
         'district'  => 'sometimes|string',
     ]);
 
-    // --- 1) buyer_id çöz ---
-    $buyerId = $data['buyer_id'] ?? null;
+    $buyerId  = !empty($data['buyer_id']) ? (int) $data['buyer_id'] : null;
+    $dealerId = null;
+    $actor    = null;
 
-    // email geldiyse buyer_id'yi email'den bul
-    if (!$buyerId && !empty($data['email'])) {
-        $u = User::where('email', $data['email'])->first();
-        if (!$u) {
+    if (!empty($data['email'])) {
+        $actor = User::where('email', $data['email'])->first();
+        if (!$actor) {
             return response()->json([
                 'success' => false,
                 'message' => 'Kullanıcı bulunamadı.',
             ], 404);
         }
-        $buyerId = (int) $u->id;
     }
 
-    if (!$buyerId) {
+    if ($buyerId === null && $actor !== null) {
+        if (in_array($actor->user_type, ['dealer', 'vendor', 'administrator'], true)) {
+            $dealerId = (int) $actor->id;
+        } else {
+            $buyerId = (int) $actor->id;
+        }
+    }
+
+    if ($buyerId === null && $dealerId === null) {
         return response()->json([
             'success' => false,
             'message' => 'buyer_id veya email göndermelisiniz.',
         ], 422);
     }
 
-    // --- 2) dealer_status kolonu var mı? ---
     $hasDealerStatusCol   = Schema::hasColumn('orders', 'dealer_status');
     $hasSupplierStatusCol = Schema::hasColumn('orders', 'supplier_status');
+    $hasBuyerIdCol        = Schema::hasColumn('orders', 'buyer_id');
+    $ownerCol             = $hasBuyerIdCol ? 'orders.buyer_id' : 'orders.user_id';
+    $statusFilter         = !empty($data['status'])
+        ? $this->mapDashboardStatusFilter((string) $data['status'])
+        : null;
 
-    // --- 3) Status filtresi (normalize) ---
-    $statusFilter = $data['status'] ?? null;
-    if ($statusFilter) {
-        // UI'dan gelen TR / karışık değeri EN’e çevir (ör: "hazırlanıyor" -> "preparing")
-        $statusFilter = $this->toEnStatus($statusFilter);
-    }
-
-    // --- 4) Sorgu ---
     $q = Order::query()
-        ->where('orders.buyer_id', $buyerId)
-        ->leftJoin('users as buyer', 'buyer.id', '=', 'orders.buyer_id')
+        ->when($buyerId !== null, fn ($qq) => $qq->where($ownerCol, $buyerId))
+        ->when($dealerId !== null, fn ($qq) => $qq->where('orders.dealer_id', $dealerId))
+        ->leftJoin('users as buyer', 'buyer.id', '=', DB::raw($ownerCol))
         ->leftJoin('users as d',     'd.id',     '=', 'orders.dealer_id')
         ->select([
             'orders.id',
             'orders.order_number',
-            'orders.buyer_id',
+            DB::raw($ownerCol . ' as buyer_id'),
             'orders.dealer_id',
             'orders.status',
-            // dealer_status yoksa status'ü fallback yap
             DB::raw($hasDealerStatusCol
                 ? 'orders.dealer_status'
                 : 'orders.status as dealer_status'),
             'orders.payment_status',
             'orders.total_amount',
             'orders.created_at',
-            // supplier_status varsa al
+            'orders.shipping_address',
+            'orders.ad_soyad',
             $hasSupplierStatusCol ? 'orders.supplier_status' : DB::raw("'pending' as supplier_status"),
-
             DB::raw('buyer.name     as buyer_name'),
             DB::raw('buyer.email    as buyer_email'),
             DB::raw('buyer.city     as buyer_city'),
@@ -1167,8 +1170,6 @@ public function supplierOrders(Request $request)
             DB::raw('d.district     as dealer_district'),
             DB::raw('d.phone        as dealer_phone'),
         ])
-
-        // Şehir / ilçe filtresi (opsiyonel)
         ->when(!empty($data['city']), function ($qq) use ($data) {
             $qq->where(function ($w) use ($data) {
                 $w->where('buyer.city', $data['city'])
@@ -1181,17 +1182,17 @@ public function supplierOrders(Request $request)
                   ->orWhere('orders.district', $data['district']);
             });
         })
-
-        // Status filtresi GELDİYSE uygula (EN normalize edilmiş hali)
-        // Burada dealer_status öncelikli, yoksa orders.status
-        ->when($statusFilter, function ($qq, $s) use ($hasDealerStatusCol) {
-            $col = $hasDealerStatusCol ? 'orders.dealer_status' : 'orders.status';
-            $qq->where($col, $s);
+        ->when($statusFilter, function ($qq, $s) use ($hasDealerStatusCol, $hasSupplierStatusCol) {
+            $qq->where(function ($w) use ($s, $hasDealerStatusCol, $hasSupplierStatusCol) {
+                $w->where('orders.status', $s);
+                if ($hasDealerStatusCol) {
+                    $w->orWhere('orders.dealer_status', $s);
+                }
+                if ($hasSupplierStatusCol) {
+                    $w->orWhere('orders.supplier_status', $s);
+                }
+            });
         })
-
-        // ARTIK: status parametresi GELMESE BİLE pending siparişler de dahil,
-        // hiçbir "!= pending" filtresi YOK. Tüm 22 kayıt gelecek.
-
         ->with([
             'items' => function ($q) {
                 $cols = [
@@ -1213,6 +1214,7 @@ public function supplierOrders(Request $request)
 
                 $q->select($cols)->with([
                     'productVariant:id,name,product_id',
+                    'productVariant.product:id,name',
                     'seller:id,name',
                 ]);
             },
@@ -1221,45 +1223,13 @@ public function supplierOrders(Request $request)
 
     $rows = $q->get();
 
-    // --- 5) Response map ---
-    $out = $rows->map(function ($r) {
-        return [
-            'id'             => (int) $r->id,
-            'order_number'   => $r->order_number,
-            'buyer_id'       => (int) $r->buyer_id,
-            'dealer_id'      => (int) $r->dealer_id,
-            'status'         => $r->status,
-            'dealer_status'  => $r->dealer_status,
-            'payment_status' => $r->payment_status,
-            'supplier_status'=> $r->supplier_status,
-            'total_amount'   => (float) $r->total_amount,
-            'created_at'     => $r->created_at,
-
-            'buyer' => [
-                'id'       => (int) $r->buyer_id,
-                'name'     => $r->buyer_name,
-                'email'    => $r->buyer_email,
-                'city'     => $r->buyer_city,
-                'district' => $r->buyer_district,
-            ],
-
-            'dealer' => [
-                'id'       => (int) $r->dealer_id,
-                'name'     => $r->dealer_name,
-                'email'    => $r->dealer_email,
-                'city'     => $r->dealer_city,
-                'district' => $r->dealer_district,
-                'phone'    => $r->dealer_phone,
-            ],
-
-            'items' => $r->items,
-        ];
-    })->values();
+    $out = $rows->map(fn ($r) => $this->mapOrderForDashboard($r))->values();
 
     return response()->json([
         'success'  => true,
         'resolved' => [
             'buyer_id' => $buyerId,
+            'dealer_id'=> $dealerId,
             'email'    => $data['email'] ?? null,
         ],
         'data' => $out,
@@ -1585,9 +1555,10 @@ public function dealer(Request $request)
         ])
         ->with([
             'items' => function ($q) {
-                $q->select('id','order_id','product_variant_id','seller_id','quantity','unit_price','total_price','status','dealer_status')
+                $q->select('id','order_id','product_variant_id','seller_id','quantity','unit_price','total_price','status','dealer_status','supplier_status')
                   ->with([
                       'productVariant:id,name,product_id',
+                      'productVariant.product:id,name',
                       'seller:id,name',
                   ]);
             },
@@ -1595,7 +1566,109 @@ public function dealer(Request $request)
         ->orderByDesc('orders.id')
         ->get();
 
-    return response()->json($orders);
+    return response()->json(
+        $orders->map(fn ($order) => $this->mapOrderForDashboard($order))->values()
+    );
+}
+
+private function mapDashboardStatusFilter(string $status): string
+{
+    $value = mb_strtolower(trim($status), 'UTF-8');
+
+    if (str_contains($value, 'haz') || in_array($value, ['pending', 'waiting'], true)) {
+        return 'pending';
+    }
+    if (
+        str_contains($value, 'sevk') ||
+        str_contains($value, 'yol') ||
+        str_contains($value, 'kurye') ||
+        in_array($value, ['courier', 'shipped', 'away'], true)
+    ) {
+        return 'courier';
+    }
+    if (str_contains($value, 'teslim') || in_array($value, ['delivered', 'closed'], true)) {
+        return 'delivered';
+    }
+    if (str_contains($value, 'iptal') || str_contains($value, 'cancel')) {
+        return 'cancelled';
+    }
+
+    return $value;
+}
+
+private function mapOrderForDashboard($row): array
+{
+    $items = collect($row->items ?? [])->map(function ($item) {
+        $productName = optional(optional($item->productVariant)->product)->name
+            ?? optional($item->productVariant)->name
+            ?? 'Ürün';
+        $variantName = optional($item->productVariant)->name;
+        $qty = (float) ($item->quantity ?? 0);
+        $lineTotal = (float) ($item->total_price ?? 0);
+        $unitPrice = (float) ($item->unit_price ?? 0);
+
+        return [
+            'id'          => (int) ($item->id ?? 0),
+            'order_item_id' => (int) ($item->id ?? 0),
+            'product_variant_id' => $item->product_variant_id !== null ? (int) $item->product_variant_id : null,
+            'product_name' => $productName,
+            'productName'  => $productName,
+            'variant_name' => $variantName,
+            'variantName'  => $variantName,
+            'qty'          => (int) $qty,
+            'quantity'     => (int) $qty,
+            'qtyCases'     => $qty,
+            'unit_price'   => $unitPrice,
+            'price'        => $unitPrice,
+            'total_price'  => $lineTotal,
+            'line_total'   => $lineTotal,
+            'lineTotal'    => $lineTotal,
+            'status'       => $item->status ?? null,
+            'dealer_status'=> $item->dealer_status ?? null,
+            'supplier_status' => $item->supplier_status ?? null,
+            'seller_name'  => optional($item->seller)->name,
+        ];
+    })->values();
+
+    $buyerId = $row->buyer_id ?? $row->user_id ?? null;
+    $createdBy = $row->created_by_name
+        ?? $row->buyer_name
+        ?? $row->ad_soyad
+        ?? null;
+
+    return [
+        'id'               => (int) ($row->id ?? 0),
+        'order_number'     => (string) ($row->order_number ?? ''),
+        'buyer_id'         => $buyerId !== null ? (int) $buyerId : null,
+        'user_id'          => $buyerId !== null ? (int) $buyerId : null,
+        'dealer_id'        => isset($row->dealer_id) ? (int) $row->dealer_id : null,
+        'status'           => $row->status ?? null,
+        'dealer_status'    => $row->dealer_status ?? null,
+        'supplier_status'  => $row->supplier_status ?? null,
+        'payment_status'   => $row->payment_status ?? null,
+        'delivery_status'  => $row->delivery_status ?? null,
+        'total_amount'     => (float) ($row->total_amount ?? 0),
+        'shipping_address' => $row->shipping_address ?? null,
+        'created_at'       => $row->created_at ?? null,
+        'created_by_name'  => $createdBy,
+        'buyer_name'       => $row->buyer_name ?? $createdBy,
+        'buyer' => [
+            'id'       => $buyerId !== null ? (int) $buyerId : null,
+            'name'     => $row->buyer_name ?? $createdBy,
+            'email'    => $row->buyer_email ?? null,
+            'city'     => $row->buyer_city ?? null,
+            'district' => $row->buyer_district ?? null,
+        ],
+        'dealer' => [
+            'id'       => isset($row->dealer_id) ? (int) $row->dealer_id : null,
+            'name'     => $row->dealer_name ?? null,
+            'email'    => $row->dealer_email ?? null,
+            'city'     => $row->dealer_city ?? null,
+            'district' => $row->dealer_district ?? null,
+            'phone'    => $row->dealer_phone ?? null,
+        ],
+        'items' => $items,
+    ];
 }
 
 
