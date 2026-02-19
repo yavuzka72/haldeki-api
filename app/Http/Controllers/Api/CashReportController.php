@@ -39,6 +39,14 @@ class CashReportController extends Controller
         $dealerId  = $request->query('dealer_id');   // orders.dealer_id
         $courierId = $request->query('courier_id');  // vw_kurye_odeme_detay.kurye_id
 
+        $deliverymanIds = collect();
+        if (!empty($dealerId)) {
+            $deliverymanIds = DB::table('users')
+                ->where('dealer_id', $dealerId)
+                ->where('user_type', 'deliveryman')
+                ->pluck('id');
+        }
+
         // Tarihi DATE kolonlarıyla uyumlu string'e çevirelim
         $fromDate = $from->toDateString(); // 'YYYY-MM-DD'
         $toDate   = $to->toDateString();   // 'YYYY-MM-DD'
@@ -133,8 +141,13 @@ class CashReportController extends Controller
         // -------------------------------------------------------------
         $couriers = DB::table('vw_kurye_odeme_detay')
             ->whereBetween('islem_tarihi', [$fromDate, $toDate])
-            ->when($dealerId, function ($q) use ($dealerId) {
-                $q->where('dealer_id', $dealerId);
+            ->when($dealerId, function ($q) use ($dealerId, $deliverymanIds) {
+                $q->where(function ($w) use ($dealerId, $deliverymanIds) {
+                    $w->where('dealer_id', $dealerId);
+                    if ($deliverymanIds->isNotEmpty()) {
+                        $w->orWhereIn('kurye_id', $deliverymanIds->all());
+                    }
+                });
             })
             ->when($courierId, function ($q) use ($courierId) {
                 // view'de kolon adı courier_id değil, kurye_id
@@ -195,6 +208,7 @@ class CashReportController extends Controller
             'date_to'   => $toDate,
             'dealer_id' => $dealerId,
             'courier_id'=> $courierId,
+            'resolved_deliveryman_ids' => $deliverymanIds,
             'summary'   => $summary,
             'daily'     => $daily,
             'customers' => $customers,
