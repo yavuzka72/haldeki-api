@@ -12,12 +12,6 @@ class CashReportController extends Controller
 {
     public function index(Request $request)
     {
-        // -------------------------------------------------------------
-        // 1) Tarih aralığı:
-        //  - from/to gelirse: o aralık
-        //  - sadece from gelirse: o gün
-        //  - hiçbiri gelmezse: bugün
-        // -------------------------------------------------------------
         $fromParam = $request->query('from'); // '2025-11-16'
         $toParam   = $request->query('to');   // '2025-11-16'
 
@@ -36,9 +30,8 @@ class CashReportController extends Controller
             ], 422);
         }
 
-        // Dealer (bayi) ve Kurye filtreleri
-        $dealerId  = $request->query('dealer_id');   // temel filtre
-        $courierId = $request->query('courier_id');  // vw_kurye_odeme_detay.kurye_id
+        $dealerId  = $request->query('dealer_id');
+        $courierId = $request->query('courier_id');
 
         $dealerScopeIds = collect();
         $deliverymanIds = collect();
@@ -71,172 +64,223 @@ class CashReportController extends Controller
                 ->pluck('id');
         }
 
-        // Tarihi DATE kolonlarıyla uyumlu string'e çevirelim
-        $fromDate = $from->toDateString(); // 'YYYY-MM-DD'
-        $toDate   = $to->toDateString();   // 'YYYY-MM-DD'
+        $fromDate = $from->toDateString();
+        $toDate   = $to->toDateString();
 
-        // -------------------------------------------------------------
-        // 2) Günlük Kasa Özeti (vw_gunluk_kasa_ozet)
-        //    Kolonlar:
-        //    - tarih, dealer_id, bayi_adi
-        //    - musteri_tahsilat, tedarikci_odeme, kurye_odeme, bayi_komisyonu, gunluk_net_kasa
-        // -------------------------------------------------------------
-        $daily = DB::table('vw_gunluk_kasa_ozet')
-            ->whereBetween('tarih', [$fromDate, $toDate])
+        $ordersQ = DB::table('orders as o')
+            ->leftJoin('users as buyer', 'buyer.id', '=', 'o.user_id')
+            ->leftJoin('users as dealer', 'dealer.id', '=', 'o.dealer_id')
+            ->whereBetween(DB::raw('DATE(o.created_at)'), [$fromDate, $toDate])
             ->when($dealerId, function ($q) use ($dealerId, $dealerScopeIds) {
                 if ($dealerScopeIds->isNotEmpty()) {
-                    $q->whereIn('dealer_id', $dealerScopeIds->all());
-                    return;
+                    return $q->whereIn('o.dealer_id', $dealerScopeIds->all());
                 }
-                $q->where('dealer_id', $dealerId);
-            })
-            ->orderBy('tarih')
+                return $q->where('o.dealer_id', $dealerId);
+            });
+
+        $customers = (clone $ordersQ)
+            ->orderBy('o.created_at')
             ->get([
-                'tarih',
-                'dealer_id',
-                'bayi_adi',
-                'musteri_tahsilat',
-                'tedarikci_odeme',
-                'kurye_odeme',
-                'bayi_komisyonu',
-                'gunluk_net_kasa',
+                DB::raw('DATE(o.created_at) as islem_tarihi'),
+                'o.dealer_id',
+                DB::raw('COALESCE(dealer.name, "Bayi") as bayi_adi'),
+                DB::raw('NULL as delivery_order_id'),
+                DB::raw('o.id as kaynak_order_id'),
+                DB::raw('COALESCE(buyer.name, o.ad_soyad, "Musteri") as musteri_adi'),
+                DB::raw('COALESCE(o.total_amount, 0) as siparis_tutari'),
+                DB::raw('CASE WHEN o.payment_status = "paid" THEN COALESCE(o.total_amount, 0) ELSE 0 END as tahsil_edilen_tutar'),
+                DB::raw('COALESCE(o.payment_status, "pending") as odeme_durumu'),
+                DB::raw('COALESCE(o.dealer_status, o.status, "pending") as siparis_durumu'),
             ]);
 
-        // -------------------------------------------------------------
-        // 3) Müşteri Tahsilat Detayı (vw_musteri_tahsilat_detay)
-        //    Kolonlar:
-        //    - islem_tarihi, dealer_id, bayi_adi
-        //    - delivery_order_id, kaynak_order_id
-        //    - musteri_id, musteri_adi
-        //    - siparis_tutari, tahsil_edilen_tutar
-        //    - odeme_durumu, siparis_durumu
-        // -------------------------------------------------------------
-        $customers = DB::table('vw_musteri_tahsilat_detay')
-            ->whereBetween('islem_tarihi', [$fromDate, $toDate])
+        $suppliers = DB::table('order_items as oi')
+            ->join('orders as o', 'o.id', '=', 'oi.order_id')
+            ->leftJoin('users as dealer', 'dealer.id', '=', 'o.dealer_id')
+            ->leftJoin('users as supplier', 'supplier.id', '=', 'oi.seller_id')
+            ->whereBetween(DB::raw('DATE(o.created_at)'), [$fromDate, $toDate])
             ->when($dealerId, function ($q) use ($dealerId, $dealerScopeIds) {
                 if ($dealerScopeIds->isNotEmpty()) {
-                    $q->whereIn('dealer_id', $dealerScopeIds->all());
-                    return;
+                    return $q->whereIn('o.dealer_id', $dealerScopeIds->all());
                 }
-                $q->where('dealer_id', $dealerId);
+                return $q->where('o.dealer_id', $dealerId);
             })
-            ->orderBy('islem_tarihi')
+            ->groupBy(
+                DB::raw('DATE(o.created_at)'),
+                'o.dealer_id',
+                'dealer.name',
+                'o.id',
+                'o.order_number',
+                'supplier.name',
+                'o.dealer_status',
+                'o.status'
+            )
+            ->orderBy(DB::raw('DATE(o.created_at)'))
             ->get([
-                'islem_tarihi',
-                'dealer_id',
-                'bayi_adi',
-                'delivery_order_id',
-                'kaynak_order_id',
-                'musteri_adi',
-                'siparis_tutari',
-                'tahsil_edilen_tutar',
-                'odeme_durumu',
-                'siparis_durumu',
+                DB::raw('DATE(o.created_at) as islem_tarihi'),
+                'o.dealer_id',
+                DB::raw('COALESCE(dealer.name, "Bayi") as bayi_adi'),
+                DB::raw('o.id as order_id'),
+                DB::raw('o.order_number as siparis_kodu'),
+                DB::raw('COALESCE(supplier.name, "Tedarikci") as tedarikci_adi'),
+                DB::raw('COALESCE(MAX(o.total_amount), 0) as siparis_tutari'),
+                DB::raw('COALESCE(SUM(oi.total_price), 0) as tedarikci_odeme_tutari'),
+                DB::raw('COALESCE(MAX(o.dealer_status), MAX(o.status), "pending") as siparis_durumu'),
+                DB::raw('CASE WHEN COALESCE(MAX(o.supplier_status), "") IN ("paid","delivered","completed","closed") THEN "paid" ELSE "pending" END as odeme_durumu'),
             ]);
 
-        // -------------------------------------------------------------
-        // 4) Tedarikçi Ödemeleri (vw_tedarikci_odeme_detay)
-        //    Kolonlar:
-        //    - islem_tarihi, dealer_id, bayi_adi
-        //    - order_id, siparis_kodu
-        //    - tedarikci_adi
-        //    - siparis_tutari, tedarikci_odeme_tutari
-        //    - siparis_durumu, odeme_durumu
-        // -------------------------------------------------------------
-        $suppliers = DB::table('vw_tedarikci_odeme_detay')
-            ->whereBetween('islem_tarihi', [$fromDate, $toDate])
-            ->when($dealerId, function ($q) use ($dealerId, $dealerScopeIds) {
-                if ($dealerScopeIds->isNotEmpty()) {
-                    $q->whereIn('dealer_id', $dealerScopeIds->all());
-                    return;
-                }
-                $q->where('dealer_id', $dealerId);
-            })
-            ->orderBy('islem_tarihi')
-            ->get([
-                'islem_tarihi',
-                'dealer_id',
-                'bayi_adi',
-                'order_id',
-                'siparis_kodu',
-                'tedarikci_adi',
-                'siparis_tutari',
-                'tedarikci_odeme_tutari',
-                'siparis_durumu',
-                'odeme_durumu',
-            ]);
+        $hasDeliveryOrders = Schema::hasTable('delivery_orders');
+        $couriers = collect();
+        $vendors  = collect();
+        if ($hasDeliveryOrders) {
+            $hasCommissionAmount = Schema::hasColumn('delivery_orders', 'commission_amount');
+            $hasCommissionStatus = Schema::hasColumn('delivery_orders', 'commission_status');
+            $hasCourierPayStatus = Schema::hasColumn('delivery_orders', 'courier_payment_status');
+            $hasCourierPaidAt    = Schema::hasColumn('delivery_orders', 'courier_paid_at');
+            $hasCommissionAt     = Schema::hasColumn('delivery_orders', 'commission_charged_at');
+            $hasDateCol          = Schema::hasColumn('delivery_orders', 'date');
 
-        // -------------------------------------------------------------
-        // 5) Kurye Ödemeleri (vw_kurye_odeme_detay)
-        //    Kolonlar:
-        //    - islem_tarihi, dealer_id, bayi_adi
-        //    - delivery_order_id, kaynak_order_id
-        //    - kurye_id, kurye_adi
-        //    - siparis_tutari, kurye_odeme_tutari
-        //    - teslimat_durumu, odeme_durumu
-        // -------------------------------------------------------------
-        $couriers = DB::table('vw_kurye_odeme_detay')
-            ->whereBetween('islem_tarihi', [$fromDate, $toDate])
-            ->when($dealerId, function ($q) use ($dealerId, $dealerScopeIds, $deliverymanIds) {
-                $q->where(function ($w) use ($dealerId, $dealerScopeIds, $deliverymanIds) {
-                    if ($dealerScopeIds->isNotEmpty()) {
-                        $w->whereIn('dealer_id', $dealerScopeIds->all());
-                    } else {
-                        $w->where('dealer_id', $dealerId);
-                    }
-                    if ($deliverymanIds->isNotEmpty()) {
-                        $w->orWhereIn('kurye_id', $deliverymanIds->all());
-                    }
+            $deliveryDateExpr = $hasDateCol ? 'DATE(d.date)' : 'DATE(d.created_at)';
+
+            $deliveryQ = DB::table('delivery_orders as d')
+                ->leftJoin('orders as o', 'o.id', '=', 'd.parent_order_id')
+                ->leftJoin('users as dealer', 'dealer.id', '=', 'o.dealer_id')
+                ->leftJoin('users as courier', 'courier.id', '=', 'd.delivery_man_id')
+                ->whereBetween(DB::raw($deliveryDateExpr), [$fromDate, $toDate])
+                ->when($dealerId, function ($q) use ($dealerId, $dealerScopeIds, $deliverymanIds) {
+                    $q->where(function ($w) use ($dealerId, $dealerScopeIds, $deliverymanIds) {
+                        if ($dealerScopeIds->isNotEmpty()) {
+                            $w->whereIn('o.dealer_id', $dealerScopeIds->all());
+                        } else {
+                            $w->where('o.dealer_id', $dealerId);
+                        }
+                        if ($deliverymanIds->isNotEmpty()) {
+                            $w->orWhereIn('d.delivery_man_id', $deliverymanIds->all());
+                        }
+                    });
+                })
+                ->when($courierId, function ($q) use ($courierId) {
+                    $q->where('d.delivery_man_id', (int) $courierId);
                 });
-            })
-            ->when($courierId, function ($q) use ($courierId) {
-                // view'de kolon adı courier_id değil, kurye_id
-                $q->where('kurye_id', $courierId);
-            })
-            ->orderBy('islem_tarihi')
-            ->get([
-                'islem_tarihi',
-                'dealer_id',
-                'bayi_adi',
-                'delivery_order_id',
-                'kaynak_order_id',
-                'kurye_adi',
-                'siparis_tutari',
-                'kurye_odeme_tutari',
-                'teslimat_durumu',
-                'odeme_durumu',
-            ]);
 
-        // -------------------------------------------------------------
-        // 6) Bayi Komisyonları (vw_bayi_komisyon_detay)
-        //    Kolonlar:
-        //    - islem_tarihi, dealer_id, bayi_adi
-        //    - order_id, siparis_kodu
-        //    - siparis_tutari, bayi_komisyon_tutari
-        //    - siparis_durumu, odeme_durumu
-        // -------------------------------------------------------------
-        $vendors = DB::table('vw_bayi_komisyon_detay')
-            ->whereBetween('islem_tarihi', [$fromDate, $toDate])
-            ->when($dealerId, function ($q) use ($dealerId, $dealerScopeIds) {
-                if ($dealerScopeIds->isNotEmpty()) {
-                    $q->whereIn('dealer_id', $dealerScopeIds->all());
-                    return;
-                }
-                $q->where('dealer_id', $dealerId);
+            $couriers = (clone $deliveryQ)
+                ->orderBy(DB::raw($deliveryDateExpr))
+                ->get([
+                    DB::raw($deliveryDateExpr . ' as islem_tarihi'),
+                    DB::raw('COALESCE(o.dealer_id, 0) as dealer_id'),
+                    DB::raw('COALESCE(dealer.name, "Bayi") as bayi_adi'),
+                    DB::raw('d.id as delivery_order_id'),
+                    DB::raw('o.id as kaynak_order_id'),
+                    DB::raw('COALESCE(courier.name, "Kurye") as kurye_adi'),
+                    DB::raw('COALESCE(d.total_amount, o.total_amount, 0) as siparis_tutari'),
+                    DB::raw('COALESCE(d.fixed_charges, 0) as kurye_odeme_tutari'),
+                    DB::raw('COALESCE(d.status, "pending") as teslimat_durumu'),
+                    DB::raw(
+                        $hasCourierPayStatus
+                            ? 'COALESCE(d.courier_payment_status, "pending") as odeme_durumu'
+                            : 'CASE WHEN d.delivery_man_id IS NOT NULL THEN "pending" ELSE "unknown" END as odeme_durumu'
+                    ),
+                ]);
+
+            $vendors = (clone $deliveryQ)
+                ->orderBy(DB::raw($deliveryDateExpr))
+                ->get([
+                    DB::raw($deliveryDateExpr . ' as islem_tarihi'),
+                    DB::raw('COALESCE(o.dealer_id, 0) as dealer_id'),
+                    DB::raw('COALESCE(dealer.name, "Bayi") as bayi_adi'),
+                    DB::raw('o.id as order_id'),
+                    DB::raw('o.order_number as siparis_kodu'),
+                    DB::raw('COALESCE(d.total_amount, o.total_amount, 0) as siparis_tutari'),
+                    DB::raw(
+                        $hasCommissionAmount
+                            ? 'COALESCE(d.commission_amount, 0) as bayi_komisyon_tutari'
+                            : 'ROUND(COALESCE(d.total_amount, o.total_amount, 0) * 0.15, 2) as bayi_komisyon_tutari'
+                    ),
+                    DB::raw('COALESCE(o.dealer_status, o.status, "pending") as siparis_durumu'),
+                    DB::raw(
+                        $hasCommissionStatus
+                            ? 'COALESCE(d.commission_status, "pending") as odeme_durumu'
+                            : 'CASE WHEN '
+                                . ($hasCommissionAt ? 'd.commission_charged_at' : 'NULL')
+                                . ' IS NOT NULL THEN "paid" ELSE "pending" END as odeme_durumu'
+                    ),
+                ]);
+        }
+
+        $dailyMap = [];
+        foreach ($customers as $row) {
+            $day = (string) $row->islem_tarihi;
+            $dailyMap[$day] ??= [
+                'tarih' => $day,
+                'dealer_id' => $dealerId ? (int)$dealerId : null,
+                'bayi_adi' => null,
+                'musteri_tahsilat' => 0.0,
+                'tedarikci_odeme' => 0.0,
+                'kurye_odeme' => 0.0,
+                'bayi_komisyonu' => 0.0,
+                'gunluk_net_kasa' => 0.0,
+            ];
+            $dailyMap[$day]['musteri_tahsilat'] += (float) ($row->tahsil_edilen_tutar ?? 0);
+            $dailyMap[$day]['bayi_adi'] = $dailyMap[$day]['bayi_adi'] ?? ($row->bayi_adi ?? null);
+        }
+        foreach ($suppliers as $row) {
+            $day = (string) $row->islem_tarihi;
+            $dailyMap[$day] ??= [
+                'tarih' => $day,
+                'dealer_id' => $dealerId ? (int)$dealerId : null,
+                'bayi_adi' => null,
+                'musteri_tahsilat' => 0.0,
+                'tedarikci_odeme' => 0.0,
+                'kurye_odeme' => 0.0,
+                'bayi_komisyonu' => 0.0,
+                'gunluk_net_kasa' => 0.0,
+            ];
+            $dailyMap[$day]['tedarikci_odeme'] += (float) ($row->tedarikci_odeme_tutari ?? 0);
+            $dailyMap[$day]['bayi_adi'] = $dailyMap[$day]['bayi_adi'] ?? ($row->bayi_adi ?? null);
+        }
+        foreach ($couriers as $row) {
+            $day = (string) $row->islem_tarihi;
+            $dailyMap[$day] ??= [
+                'tarih' => $day,
+                'dealer_id' => $dealerId ? (int)$dealerId : null,
+                'bayi_adi' => null,
+                'musteri_tahsilat' => 0.0,
+                'tedarikci_odeme' => 0.0,
+                'kurye_odeme' => 0.0,
+                'bayi_komisyonu' => 0.0,
+                'gunluk_net_kasa' => 0.0,
+            ];
+            $dailyMap[$day]['kurye_odeme'] += (float) ($row->kurye_odeme_tutari ?? 0);
+            $dailyMap[$day]['bayi_adi'] = $dailyMap[$day]['bayi_adi'] ?? ($row->bayi_adi ?? null);
+        }
+        foreach ($vendors as $row) {
+            $day = (string) $row->islem_tarihi;
+            $dailyMap[$day] ??= [
+                'tarih' => $day,
+                'dealer_id' => $dealerId ? (int)$dealerId : null,
+                'bayi_adi' => null,
+                'musteri_tahsilat' => 0.0,
+                'tedarikci_odeme' => 0.0,
+                'kurye_odeme' => 0.0,
+                'bayi_komisyonu' => 0.0,
+                'gunluk_net_kasa' => 0.0,
+            ];
+            $dailyMap[$day]['bayi_komisyonu'] += (float) ($row->bayi_komisyon_tutari ?? 0);
+            $dailyMap[$day]['bayi_adi'] = $dailyMap[$day]['bayi_adi'] ?? ($row->bayi_adi ?? null);
+        }
+
+        $daily = collect($dailyMap)
+            ->map(function ($r) {
+                $r['gunluk_net_kasa'] = round(
+                    ($r['musteri_tahsilat'] ?? 0)
+                    - ($r['tedarikci_odeme'] ?? 0)
+                    - ($r['kurye_odeme'] ?? 0)
+                    + ($r['bayi_komisyonu'] ?? 0),
+                    2
+                );
+                return (object) $r;
             })
-            ->orderBy('islem_tarihi')
-            ->get([
-                'islem_tarihi',
-                'dealer_id',
-                'bayi_adi',
-                'order_id',
-                'siparis_kodu',
-                'bayi_adi',
-                'siparis_tutari',
-                'bayi_komisyon_tutari',
-                'siparis_durumu',
-                'odeme_durumu',
-            ]);
+            ->sortBy('tarih')
+            ->values();
 
         $summary = [
             'customer_collections_total' => (float) $customers->sum('tahsil_edilen_tutar'),
