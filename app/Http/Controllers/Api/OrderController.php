@@ -2249,11 +2249,30 @@ public function vendor(Request $request)
         ], 404);
     }
 
-    // Not: orders tablosunda kolon user_id ise buyer_id yerine user_id kullan
-    $orders = \App\Models\Order::where('user_id', $user->id)
+    $hasBuyerId           = Schema::hasColumn('orders', 'buyer_id');
+    $hasResellerId        = Schema::hasColumn('orders', 'reseller_id');
+    $hasItemDealerStatus  = Schema::hasColumn('order_items', 'dealer_status');
+
+    $orders = \App\Models\Order::query()
+        ->where(function ($q) use ($user, $hasBuyerId, $hasResellerId) {
+            // Farklı şema/akışlar için tüm olası eşleşmeleri kapsa.
+            $q->where('user_id', $user->id);
+
+            if ($hasBuyerId) {
+                $q->orWhere('buyer_id', $user->id);
+            }
+
+            if ($hasResellerId) {
+                $q->orWhere('reseller_id', $user->id);
+            }
+        })
+        ->orWhereHas('items', function ($q) use ($user) {
+            // Vendor/supplier kullanıcılar için item bazlı sahiplik.
+            $q->where('seller_id', $user->id);
+        })
         ->with([
-            'items' => function ($q) {
-                $q->select(
+            'items' => function ($q) use ($hasItemDealerStatus) {
+                $columns = [
                     'id',
                     'order_id',
                     'product_variant_id',
@@ -2262,8 +2281,13 @@ public function vendor(Request $request)
                     'unit_price',
                     'total_price',
                     'status',
-                    'dealer_status'
-                )->with([
+                ];
+
+                if ($hasItemDealerStatus) {
+                    $columns[] = 'dealer_status';
+                }
+
+                $q->select($columns)->with([
                     'productVariant:id,name,product_id',
                     'productVariant.product:id,name',
                     'seller:id,name',
@@ -2283,6 +2307,7 @@ public function vendor(Request $request)
     return response()->json([
         'success' => true,
         'user_id' => $user->id,
+        'user_type' => $user->user_type,
         'order_count' => $orders->count(),
         'orders' => $orders,
     ]);
