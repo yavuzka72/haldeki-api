@@ -1,0 +1,52 @@
+<IfModule mod_rewrite.c>
+    <IfModule mod_negotiation.c>
+        Options -MultiViews -Indexes
+    </IfModule>
+
+    RewriteEngine On
+
+    # Handle Authorization Header
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    # Handle X-XSRF-Token Header
+    RewriteCond %{HTTP:x-xsrf-token} .
+    RewriteRule .* - [E=HTTP_X_XSRF_TOKEN:%{HTTP:X-XSRF-Token}]
+
+    # Redirect Trailing Slashes If Not A Folder...
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_URI} (.+)/$
+    RewriteRule ^ %1 [L,R=301]
+
+    # Send Requests To Front Controller...
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.php [L]
+</IfModule>
+# public/ ya da public/storage/.htaccess
+
+<IfModule mod_headers.c>
+  # Origin halindeki tüm alt alan adlarını kabul et
+  # ✅ DEV: localhost / 127.0.0.1 portlu
+  SetEnvIfNoCase Origin "^http://localhost(:[0-9]+)?$" ORIGIN_OK=$0
+  SetEnvIfNoCase Origin "^http://127\.0\.0\.1(:[0-9]+)?$" ORIGIN_OK=$0
+
+  # ✅ PROD örneği (istersen kalsın)
+  SetEnvIfNoCase Origin "^https?://([a-z0-9-]+\.)*haldeki\.com(\.tr)?$" ORIGIN_OK=$0
+
+  <FilesMatch "\.(?i:png|jpe?g|gif|webp|svg|ico)$">
+    Header always set Access-Control-Allow-Origin "%{ORIGIN_OK}e" env=ORIGIN_OK
+    Header always set Access-Control-Allow-Credentials "true" env=ORIGIN_OK
+    Header always set Access-Control-Allow-Methods "GET, OPTIONS" env=ORIGIN_OK
+    Header always set Access-Control-Allow-Headers "Origin, Content-Type, Accept, Authorization, X-Requested-With" env=ORIGIN_OK
+    Header always set Access-Control-Max-Age "86400" env=ORIGIN_OK
+    Header always set Vary "Origin" env=ORIGIN_OK
+  </FilesMatch>
+</IfModule>
+
+ # OPTIONS preflight gelirse boş 204 dönsün (bazı tarayıcılar sever)
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{REQUEST_METHOD} OPTIONS
+  RewriteRule ^(.*)$ $1 [R=204,L]
+</IfModule>

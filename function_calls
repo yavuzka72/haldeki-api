@@ -1,0 +1,155 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
+
+class CheckoutController extends Controller
+{
+    public function index()
+    {
+        $cart = session()->get('cart', ['items' => [], 'total' => 0]);
+        
+        if (empty($cart['items'])) {
+            return redirect()->route('cart.index')
+                ->with('error', 'Sepetiniz boş');
+        }
+
+        return view('checkout.index', compact('cart'));
+    }
+
+    public function initPayment(Request $request)
+    {
+        $cart = session()->get('cart');
+        if (empty($cart['items'])) {
+            return response()->json(['error' => 'Sepetiniz boş'], 400);
+        }
+
+        // Sipariş numarası oluştur
+        $orderNumber = 'ORD-' . strtoupper(Str::random(8));
+
+        // Sepet içeriğini hazırla
+        $basketItems = [];
+        foreach ($cart['items'] as $item) {
+            $basketItems[] = [
+                $item['name'] . ' - ' . $item['variant_name'],
+                $item['price'],
+                $item['quantity']
+            ];
+        }
+
+        // PayTR için gerekli parametreleri hazırla
+        $params = [
+            'merchant_id' => config('paytr.merchant_id'),
+            'user_ip' => request()->ip(),
+            'merchant_oid' => $orderNumber,
+            'email' => $request->email,
+            'payment_amount' => (int)($cart['total'] * 108), // KDV dahil toplam tutarı kuruş cinsinden
+            'paytr_token' => '',
+            'user_basket' => base64_encode(json_encode($basketItems)),
+            'debug_on' => config('paytr.test_mode') ? 1 : 0,
+            'no_installment' => 1,
+            'max_installment' => 0,
+            'user_name' => $request->name,
+            'user_phone' => $request->phone,
+            'user_address' => $request->address,
+            'merchant_ok_url' => route('checkout.success'),
+            'merchant_fail_url' => route('checkout.cancel'),
+            'timeout_limit' => 30,
+            'currency' => 'TL',
+            'test_mode' => config('paytr.test_mode') ? 1 : 0
+        ];
+
+        // Token oluştur
+        $hashStr = implode('', [
+            config('paytr.merchant_id'),
+            $params['user_ip'],
+            $params['merchant_oid'],
+            $params['email'],
+            $params['payment_amount'],
+            $params['user_basket'],
+            $params['no_installment'],
+            $params['max_installment'],
+            $params['currency'],
+            $params['test_mode']
+        ]) . config('paytr.merchant_salt');
+
+        $token = base64_encode(hash_hmac('sha256', $hashStr, config('paytr.merchant_key'), true));
+        $params['paytr_token'] = $token;
+
+        try {
+            // SSL doğrulamasını devre dışı bırakarak isteği gönder
+            $response = Http::withoutVerifying()
+                ->post('https://www.paytr.com/odeme/api/get-token', $params);
+
+            $result = $response->json();
+
+            if ($result['status'] === 'success') {
+                // Sipariş bilgilerini session'da sakla
+                session()->put('pending_order', [
+                    'order_number' => $orderNumber,
+                    'shipping_address' => $request->address,
+                    'phone' => $request->phone,
+                    'email' => $request->email,
+                    'note' => $request->note,
+                    'cart' => $cart
+                ]);
+
+                return response()->json([
+                    'token' => $result['token'],
+                    'iframe_url' => "https://www.paytr.com/odeme/guvenli/" . $result['token']
+                ]);
+            }
+
+            return response()->json(['error' => $result['reason']], 400);
+
+        } catch (\Exception $e) {
+            \Log::error('PayTR Error: ' . $e->getMessage());
+            return response()->json(['error' => 'Ödeme sistemi şu anda kullanılamıyor. Lütfen daha sonra tekrar deneyin.'], 500);
+        }
+    }
+
+    public function success(Request $request)
+    {
+        $pendingOrder = session()->get('pending_order');
+        if (!$pendingOrder) {
+            return redirect()->route('cart.index');
+        }
+
+        // Siparişi API'ye gönder
+        $response = Http::withoutVerifying()
+            ->post('https://haldeki.com/api/v1/orders', [
+                'order_number' => $pendingOrder['order_number'],
+                'shipping_address' => $pendingOrder['shipping_address'],
+                'phone' => $pendingOrder['phone'],
+                'email' => $pendingOrder['email'],
+                'note' => $pendingOrder['note'],
+                'items' => collect($pendingOrder['cart']['items'])->map(function($item) {
+                    return [
+                        'product_variant_id' => $item['variant_id'],
+                        'quantity' => $item['quantity'],
+                    ];
+                })->values()->toArray()
+            ]);
+
+        if ($response->successful()) {
+            // Sepeti ve bekleyen siparişi temizle
+            session()->forget(['cart', 'pending_order']);
+            
+            return redirect()->route('orders.show', $response->json()['data']['id'])
+                ->with('success', 'Siparişiniz başarıyla oluşturuldu!');
+        }
+
+        return redirect()->route('cart.index')
+            ->with('error', 'Sipariş oluşturulurken bir hata oluştu.');
+    }
+
+    public function cancel()
+    {
+        session()->forget('pending_order');
+        return redirect()->route('cart.index')
+            ->with('error', 'Ödeme işlemi iptal edildi.');
+    }
+} 

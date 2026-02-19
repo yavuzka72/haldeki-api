@@ -1,0 +1,25 @@
+{
+  "variables": {
+    "IS_LARAVEL": "1"
+  },
+  "phases": {
+    "setup": {
+      "aptPkgs": ["nginx"]
+    },
+    "install": {
+      "cmds": [
+        "composer install --no-dev --optimize-autoloader"
+      ]
+    },
+    "build": {
+      "cmds": [
+        "cp .docker/nginx.conf /etc/nginx/sites-available/default || true",
+        "cp .docker/nginx.conf /etc/nginx/conf.d/default.conf || true",
+        "php artisan optimize:clear || true"
+      ]
+    },
+    "start": {
+      "cmd": "php-fpm -F & nginx -g 'daemon off;'"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+FROM php:8.3-fpm-alpine
+
+RUN apk add --no-cache nginx supervisor bash \
+    && docker-php-ext-install pdo pdo_mysql
+
+WORKDIR /app
+COPY . /app
+
+# (vendor yoksa prod için composer install; varsa bile sorun değil)
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+RUN composer install --no-dev --optimize-autoloader || true
+
+COPY .docker/nginx.conf /etc/nginx/http.d/default.conf
+COPY .docker/supervisord.conf /etc/supervisord.conf
+
+RUN mkdir -p storage bootstrap/cache \
+    && chmod -R 775 storage bootstrap/cache
+
+EXPOSE 80
+CMD ["/usr/bin/supervisord","-c","/etc/supervisord.conf"]
