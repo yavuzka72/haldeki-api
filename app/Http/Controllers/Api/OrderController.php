@@ -2311,6 +2311,7 @@ public function vendor(Request $request)
         'order_count' => $orders->count(),
         'orders' => $orders,
     ]);
+    
 }
 
 // app/Http/Controllers/Api/OrderController.php
