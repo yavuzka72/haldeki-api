@@ -6,7 +6,7 @@ return [
     'allowed_methods' => ['*'],
 
     'allowed_origins' => [
-        'http://172.20.10.5:8083',
+        
       'https://tedarik.haldeki.com',
     ],
 
@@ -21,5 +21,5 @@ return [
 
     'max_age' => 0,
 
-    'supports_credentials' => false,
+    'supports_credentials' => true,
 ];
