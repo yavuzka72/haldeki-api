@@ -300,6 +300,8 @@ public function update(Request $request, Product $product)
 	
 public function index(Request $request)
 {
+    $disk = config('filesystems.media_disk', 'public');
+
     // --- Esnek parametre eşleme ---
     $q = $request->input('q', $request->input('search'));
 
@@ -337,10 +339,10 @@ public function index(Request $request)
     $products = $query->paginate($perPage);
 
     // --- Görseli tam URL'ye çevir ---
-    $products->getCollection()->transform(function ($p) {
+    $products->getCollection()->transform(function ($p) use ($disk) {
         $p->image_url = null;
         if (!empty($p->image)) {
-            $url = \Storage::disk('public')->url(ltrim($p->image, '/'));
+            $url = \Storage::disk($disk)->url(ltrim($p->image, '/'));
             $p->image_url = preg_match('~^https?://~i', $url)
                 ? $url
                 : url('storage/' . ltrim($p->image, '/'));
@@ -547,6 +549,8 @@ public function variantsDealer(Request $request, Product $product)
         }
     public function productById(Request $request)
     {
+        $disk = config('filesystems.media_disk', 'public');
+
         $data = $request->validate([
             'email'      => 'required|email',
             'product_id' => 'required|integer|exists:products,id',
@@ -620,7 +624,7 @@ public function variantsDealer(Request $request, Product $product)
         // 6) Görsel URL
         $imageUrl = null;
         if (!empty($product->image)) {
-            $url = Storage::disk('public')->url(ltrim($product->image, '/'));
+            $url = Storage::disk($disk)->url(ltrim($product->image, '/'));
             if (preg_match('~^https?://~i', $url)) {
                 $imageUrl = $url;
             } else {
@@ -648,6 +652,8 @@ public function variantsDealer(Request $request, Product $product)
     
        public function productsByUser3(Request $request)
     {
+        $disk = config('filesystems.media_disk', 'public');
+
         $data = $request->validate([
             'user_id'         => 'required_without:email|integer|exists:users,id',
             'email'           => 'required_without:user_id|email',
@@ -686,10 +692,10 @@ public function variantsDealer(Request $request, Product $product)
         $p = $q->paginate($perPage);
 
         // Ürün listesi + image_url
-        $items = collect($p->items())->map(function ($r) {
+        $items = collect($p->items())->map(function ($r) use ($disk) {
             $imageUrl = null;
             if (!empty($r->image)) {
-                $url = Storage::disk('public')->url(ltrim($r->image,'/'));
+                $url = Storage::disk($disk)->url(ltrim($r->image,'/'));
                 $imageUrl = preg_match('~^https?://~i', $url) ? $url : url('storage/'.ltrim($r->image,'/'));
             }
             return [

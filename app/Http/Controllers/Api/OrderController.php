@@ -23,6 +23,7 @@ use Illuminate\Validation\Rule;
 use App\Support\OrderStatus;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Storage;
  
 use Throwable;
 
@@ -164,6 +165,8 @@ public function store(Request $request)
     }
 public function itemsEnrichedByEmail(Request $request)
     {
+        $disk = config('filesystems.media_disk', 'public');
+
         $data = $request->validate([
             'email'         => 'required|email',
             'order_number'  => 'sometimes|string',
@@ -239,10 +242,10 @@ public function itemsEnrichedByEmail(Request $request)
         $paginator = $q->paginate($perPage);
 
         // 4) Görsel URL + cast’ler
-        $items = collect($paginator->items())->map(function ($row) {
+        $items = collect($paginator->items())->map(function ($row) use ($disk) {
             $imageUrl = null;
             if (!empty($row->image_path)) {
-                try { $imageUrl = Storage::disk('public')->url($row->image_path); }
+                try { $imageUrl = Storage::disk($disk)->url($row->image_path); }
                 catch (\Throwable) { $imageUrl = url('storage/' . ltrim($row->image_path, '/')); }
             }
             return [
@@ -1501,7 +1504,7 @@ public function supplierUpdateStatus(Request $request)
 }
 
 
-public function dealer(Request $request)
+public function dealerw(Request $request)
 {
     $request->validate([
         'email' => 'required|email',
@@ -1570,6 +1573,106 @@ public function dealer(Request $request)
         $orders->map(fn ($order) => $this->mapOrderForDashboard($order))->values()
     );
 }
+
+ 
+public function dealer(Request $request)
+{
+    $request->validate([
+        'email' => 'required|email',
+        'page' => 'nullable|integer|min:1',
+        'per_page' => 'nullable|integer|min:1|max:100',
+    ]);
+
+    try {
+        $dealer = User::where('email', $request->email)->first();
+
+        if (!$dealer) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Kullanıcı (bayi) bulunamadı.',
+            ], 404);
+        }
+
+        $perPage = (int) ($request->input('per_page', 20));
+
+        $orders = Order::query()
+            ->where('orders.dealer_id', $dealer->id)
+
+            ->leftJoin('users as buyer', 'buyer.id', '=', 'orders.user_id')
+            ->leftJoin('partner_clients as pc', 'pc.id', '=', 'orders.partner_client_id')
+
+            ->select([
+                'orders.id',
+                'orders.order_number',
+                'orders.user_id',
+                'orders.dealer_id',
+        //        'orders.user_type',
+         //       'orders.ad_soyad',
+                'orders.partner_client_id',
+                'orders.partner_order_id',
+                'orders.status',
+                'orders.dealer_status',
+                'orders.supplier_status',
+                'orders.payment_status',
+                'orders.delivery_status',
+                'orders.total_amount',
+                'orders.created_at',
+                'orders.shipping_address',
+                DB::raw('buyer.name as buyer_name'),
+                DB::raw('buyer.city as buyer_city'),
+                DB::raw('buyer.district as buyer_district'),
+                DB::raw('buyer.user_type as buyer_type'),
+                DB::raw('pc.name as partner_client_name'),
+                DB::raw('pc.address as partner_client_address'),
+                DB::raw('pc.latitude as partner_client_lat'),
+                DB::raw('pc.longitude as partner_client_long'),
+            ])
+            ->with([
+                'items' => function ($q) {
+                    $q->select(
+                        'id',
+                        'order_id',
+                        'product_variant_id',
+                        'seller_id',
+                        'quantity',
+                        'unit_price',
+                        'total_price',
+                        'status',
+                        'dealer_status',
+                        'supplier_status'
+                    )->with([
+                        'productVariant:id,name,product_id',
+                        'productVariant.product:id,name',
+                        'seller:id,name',
+                    ]);
+                },
+            ])
+            ->orderByDesc('orders.id')
+            ->paginate($perPage);
+
+        // mapOrderForDashboard null-safe değilse tek tek try/catch ile koru
+        $orders->setCollection(
+            $orders->getCollection()->map(function ($order) {
+                return $this->mapOrderForDashboard($order);
+            })->values()
+        );
+
+        return response()->json($orders);
+    } catch (\Throwable $e) {
+        Log::error('dealer-orders failed', [
+            'email' => $request->email,
+            'message' => $e->getMessage(),
+            'line' => $e->getLine(),
+            'file' => $e->getFile(),
+        ]);
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Sunucu hatası.',
+        ], 500);
+    }
+}
+
 
 private function mapDashboardStatusFilter(string $status): string
 {

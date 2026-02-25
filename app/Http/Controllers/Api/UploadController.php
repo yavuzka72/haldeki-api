@@ -10,6 +10,8 @@ class UploadController extends Controller
 {
     public function store(Request $request)
     {
+        $disk = config('filesystems.media_disk', 'public');
+
         // Flutter: FormData key'i 'image' olmalı
         $request->validate([
             'image' => 'required|file|image|mimes:jpg,jpeg,png,webp,gif|max:5120', // max 5MB
@@ -17,11 +19,11 @@ class UploadController extends Controller
 
         $file = $request->file('image');
 
-        // public diskine kaydet (storage/app/public/uploads/products)
-        $path = $file->store('products', 'public');
+        // MEDIA_DISK'e kaydet (local/public veya r2)
+        $path = $file->store('products', $disk);
 
-        // public URL (storage:link gerekiyor, aşağıya bak)
-        $url = Storage::disk('public')->url($path);
+        // Seçili diskten URL üret
+        $url = Storage::disk($disk)->url($path);
 
         return response()->json([
             'success' => true,

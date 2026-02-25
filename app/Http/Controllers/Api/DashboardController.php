@@ -15,6 +15,8 @@ class DashboardController extends Controller
     
 public function topProductsForRestaurant(Request $request)
 {
+    $disk = config('filesystems.media_disk', 'public');
+
     $data = $request->validate([
         'email'   => 'required_without:user_id|email',
         'user_id' => 'required_without:email|integer|exists:users,id',
@@ -58,10 +60,10 @@ public function topProductsForRestaurant(Request $request)
         ->limit($limit)
         ->get();
 
-    $list = $rows->map(function ($r) {
+    $list = $rows->map(function ($r) use ($disk) {
         $imageUrl = null;
         if (!empty($r->image_path)) {
-            try { $imageUrl = \Storage::disk('public')->url($r->image_path); }
+            try { $imageUrl = \Storage::disk($disk)->url($r->image_path); }
             catch (\Throwable) { $imageUrl = url('storage/' . ltrim($r->image_path, '/')); }
         }
         return [
