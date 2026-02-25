@@ -6,7 +6,6 @@ return [
     'allowed_methods' => ['*'],
 
     'allowed_origins' => [
-        
       'https://tedarik.haldeki.com',
     ],
 
