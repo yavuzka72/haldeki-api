@@ -99,6 +99,7 @@ class VariantPriceController extends Controller
             'date' => ['nullable', 'date'],
             'user_id' => ['nullable', 'integer', Rule::exists('users', 'id')],
             'email' => ['nullable', 'email', Rule::exists('users', 'email')],
+            'dealer_id' => ['nullable', 'integer'],
             'partner_client_id' => ['nullable', 'integer', Rule::exists('partner_clients', 'id')],
             'partner_email' => ['nullable', 'email', Rule::exists('partner_clients', 'email')],
         ]);
@@ -118,124 +119,56 @@ class VariantPriceController extends Controller
                 ->value('id');
         }
 
-        $logRows = DB::table('price_logs as pl')
+        $rows = DB::table('price_logs as pl')
             ->leftJoin('product_variants as pv', 'pv.id', '=', 'pl.product_variant_id')
+         //   ->leftJoin('partner_clients as pc', 'pc.id', '=', 'pl.partner_client_id')
             ->where(function ($q) use ($targetDate) {
                 $q->whereDate('pl.created_at', $targetDate)
                   ->orWhereDate('pl.updated_at', $targetDate);
             })
-               ->orderByDesc('pl.id')
+            ->when($userId, fn ($q) => $q->where('pl.owner_user_id', $userId))
+            ->when(isset($data['dealer_id']), fn ($q) => $q->where('pc.dealer_id', (int) $data['dealer_id']))
+         //   ->when($partnerClientId, fn ($q) => $q->where('pl.partner_client_id', $partnerClientId))
+            ->orderByDesc('pl.id')
             ->select([
                 'pl.id',
                 'pl.owner_user_id as user_id',
-              
+                'pc.dealer_id',
+            //    'pl.partner_client_id',
                 'pl.product_variant_id',
+                DB::raw('COALESCE(pl.product_id, pv.product_id) as product_id'),
+                'pl.old_price',
                 'pl.new_price',
+                'pl.old_active',
                 'pl.new_active',
-                DB::raw('COALESCE(pl.product_id, pv.product_id) as resolved_product_id'),
+                'pl.changed_by_user_id',
+                'pl.created_at',
                 'pl.updated_at',
             ])
-            ->get();
-
-        // Aynı varyant için gün içinde birden fazla kayıt olabilir; en güncelini tut.
-        $latestLogsByVariant = $logRows
-            ->filter(fn ($r) => !empty($r->product_variant_id))
-            ->unique('product_variant_id')
-            ->values();
-
-        $variantIds = $latestLogsByVariant->pluck('product_variant_id')->map(fn ($v) => (int) $v)->values();
-        $productIds = $latestLogsByVariant
-            ->pluck('resolved_product_id')
-            ->filter()
-            ->map(fn ($v) => (int) $v)
-            ->unique()
-            ->values();
-
-        if ($productIds->isEmpty()) {
-            return response()->json([
-                'success' => true,
-                'date' => $targetDate,
-                'count' => 0,
-                'data' => [],
+            ->get()
+            ->map(fn ($r) => [
+                'id' => (int) $r->id,
+                'user_id' => $r->user_id !== null ? (int) $r->user_id : null,
+                'dealer_id' => $r->dealer_id !== null ? (int) $r->dealer_id : null,
+                'partner_client_id' => $r->partner_client_id !== null ? (int) $r->partner_client_id : null,
+                'product_id' => $r->product_id !== null ? (int) $r->product_id : null,
+                'product_variant_id' => $r->product_variant_id !== null ? (int) $r->product_variant_id : null,
+                'price' => $r->new_price !== null ? (float) $r->new_price : null,
+                'active' => $r->new_active !== null ? (bool) $r->new_active : null,
+                'old_price' => $r->old_price !== null ? (float) $r->old_price : null,
+                'new_price' => $r->new_price !== null ? (float) $r->new_price : null,
+                'old_active' => $r->old_active !== null ? (bool) $r->old_active : null,
+                'new_active' => $r->new_active !== null ? (bool) $r->new_active : null,
+                'changed_by_user_id' => $r->changed_by_user_id !== null ? (int) $r->changed_by_user_id : null,
+                'created_at' => $r->created_at,
+                'updated_at' => $r->updated_at,
             ]);
-        }
-
-        $products = DB::table('products')
-            ->whereIn('id', $productIds)
-            ->select(['id', 'name', 'image', 'description', 'active', 'updated_at'])
-            ->get()
-            ->keyBy('id');
-
-        $categoriesByProduct = DB::table('category_product as cp')
-            ->join('categories as c', 'c.id', '=', 'cp.category_id')
-            ->whereIn('cp.product_id', $productIds)
-            ->orderBy('c.id')
-            ->select(['cp.product_id', 'c.id', 'c.name'])
-            ->get()
-            ->groupBy('product_id')
-            ->map(fn ($rows) => $rows->map(fn ($c) => [
-                'id' => (int) $c->id,
-                'name' => (string) $c->name,
-            ])->values());
-
-        $variants = DB::table('product_variants')
-            ->whereIn('id', $variantIds)
-            ->orderBy('id')
-            ->get()
-            ->keyBy('id');
-
-        $logsByProduct = $latestLogsByVariant->groupBy('resolved_product_id');
-        $data = collect();
-
-        foreach ($logsByProduct as $productId => $logs) {
-            $productId = (int) $productId;
-            $product = $products->get($productId);
-            if (!$product) {
-                continue;
-            }
-
-            $productArr = (array) $product;
-            $variantItems = collect($logs)->map(function ($log) use ($variants) {
-                $variant = $variants->get((int) $log->product_variant_id);
-                $v = $variant ? (array) $variant : [];
-
-                return [
-                    'id' => (int) ($v['id'] ?? $log->product_variant_id),
-                    'name' => $v['name'] ?? null,
-                    'sku' => $v['sku'] ?? null,
-                    'unit' => $v['unit'] ?? null,
-                    'multiplier' => (float) ($v['multiplier'] ?? 1),
-                    'active' => isset($v['active']) ? (int) ((bool) $v['active']) : null,
-                    'updated_at' => $v['updated_at'] ?? null,
-                    'price' => $log->new_price !== null
-                        ? [
-                            'price' => (float) $log->new_price,
-                            'source' => 'partner_override',
-                            'updated_at' => $log->updated_at,
-                        ]
-                        : null,
-                ];
-            })->values();
-
-            $data->push([
-                'product' => [
-                    'id' => (int) $productArr['id'],
-                    'name' => $productArr['name'] ?? null,
-                    'image' => $productArr['image'] ?? null,
-                    'description' => $productArr['description'] ?? null,
-                    'active' => isset($productArr['active']) ? (int) ((bool) $productArr['active']) : null,
-                    'updated_at' => $productArr['updated_at'] ?? null,
-                    'categories' => $categoriesByProduct->get($productId, collect())->values(),
-                ],
-                'variants' => $variantItems,
-            ]);
-        }
 
         return response()->json([
             'success' => true,
             'date' => $targetDate,
-            'count' => $data->count(),
-            'data' => $data->values(),
+            'count' => $rows->count(),
+            'data' => $rows,
         ]);
     }
 

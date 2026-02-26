@@ -50,6 +50,13 @@ use App\Http\Controllers\Api\CouriersController;
 
 
 Route::prefix('v1')->group(function () {
+    Route::get('health', function () {
+        return response()->json([
+            'ok' => true,
+            'service' => 'haldeki-api',
+            'time' => now()->toDateTimeString(),
+        ]);
+    });
 
     // ===== AUTH (Public) =====
     Route::post('login', [AuthController::class, 'login']);
@@ -228,7 +235,8 @@ Route::prefix('v1')->group(function () {
 
 
        Route::get('products/{product}/variantsuser', [ProductController::class, 'variantsUser']);
-           Route::post('user-product-prices/upsert', [VariantPriceController::class, 'upsert']);
+       Route::post('user-product-prices/upsert', [VariantPriceController::class, 'upsert']);
+       Route::get('user-product-prices/today-updates', [VariantPriceController::class, 'todayUpdateList']);
         Route::get('/products/{product}/variants/dealer', [ProductController::class, 'variantsDealer']);
 //    Route::post('user-product-prices/upsert', [UserProductPriceController::class, 'upsert']);
 
@@ -262,11 +270,13 @@ Route::prefix('partner/v1')->group(function () {
 
     Route::post('auth/token', [AuthPartnerController::class, 'token']);
 
-    // public bırakılmış
-    Route::apiResource('partner-clients', PartnerClientController::class);
+    // index/show hariç public (index/show partner auth ile korunacak)
+    Route::apiResource('partner-clients', PartnerClientController::class)->except(['index', 'show']);
     Route::get('partner-clients/{id}/orders', [PartnerClientController::class, 'show2']);
 
     Route::middleware('partner.auth')->group(function () {
+        Route::get('partner-clients', [PartnerClientController::class, 'index']);
+        Route::get('partner-clients/{id}', [PartnerClientController::class, 'show']);
 
     
         Route::post('build-price-list', [PartnerCatalogController::class, 'buildPriceList']);
@@ -301,6 +311,7 @@ Route::prefix('partner/v1')->group(function () {
         Route::get('customers/{id}', [PartnerCustomerController::class, 'show']);
 
         Route::post('prices/upsert', [VariantPriceController::class, 'upsert']);
+        Route::get('prices/today-updates', [VariantPriceController::class, 'todayUpdateList']);
         Route::post('variants/{variant}/prices', [VariantPriceController::class, 'store']);
         Route::put('prices/{price}', [VariantPriceController::class, 'update']);
 

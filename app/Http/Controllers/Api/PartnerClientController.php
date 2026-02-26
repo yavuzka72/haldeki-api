@@ -11,6 +11,23 @@ use App\Models\DeliveryOrder;
 
 class PartnerClientController extends Controller
 {
+    public function me(Request $request)
+    {
+        $partner = $request->attributes->get('partner');
+
+        if (!$partner) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthenticated partner.',
+            ], 401);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => $partner,
+        ]);
+    }
+
     public function index2(Request $request)
     {
         $q = trim((string) $request->query('q', ''));
@@ -41,8 +58,16 @@ class PartnerClientController extends Controller
     }
 
 
-    public function index(Request $request)
+public function index(Request $request)
 {
+    $authPartner = $request->attributes->get('partner');
+    if ($authPartner) {
+        return response()->json([
+            'success' => true,
+            'data' => $authPartner,
+        ]);
+    }
+
     $data = $request->validate([
         'page'     => ['nullable','integer','min:1'],
         'per_page' => ['nullable','integer','min:1','max:500'],
@@ -84,8 +109,23 @@ class PartnerClientController extends Controller
     return response()->json($query->paginate($perPage));
 }
 
-  public function show($id)
+  public function show(Request $request, $id)
     {
+        $authPartner = $request->attributes->get('partner');
+        if (!$authPartner) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthenticated partner.',
+            ], 401);
+        }
+
+        if ((int) $authPartner->id !== (int) $id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Forbidden: partner mismatch.',
+            ], 403);
+        }
+
         $partner = PartnerClient::findOrFail($id);
 
         return response()->json([

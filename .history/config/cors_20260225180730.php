@@ -1,13 +1,15 @@
 <?php
 
 return [
-    'paths' => ['api/*', 'sanctum/csrf-cookie'],
-
+   // 'paths' => ['api/*', 'sanctum/csrf-cookie', 'storage/*'],
+   'paths' => ['*'],
     'allowed_methods' => ['*'],
 
     'allowed_origins' => [
-        'http://10.187.186.24:8083',
-        'http://10.187.186.24',
+        'http://172.20.10.5:8083',
+        'http://172.20.10.5',
+        'http://192.168.64.2'
+        'https://api.haldeki.com'
     ],
 
     'allowed_origins_patterns' => [
